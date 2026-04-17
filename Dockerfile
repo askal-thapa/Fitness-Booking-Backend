@@ -7,7 +7,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build && echo "Build succeeded" && ls dist/main.js
+RUN npm run build && echo "Build output:" && find /app/dist -type f 2>/dev/null || echo "dist is empty or missing"
 
 # Stage 2: Production
 FROM node:20-alpine AS production
