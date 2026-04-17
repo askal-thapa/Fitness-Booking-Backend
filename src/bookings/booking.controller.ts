@@ -14,15 +14,14 @@ import { Roles } from '../auth/roles.decorator';
 import { CreateBookingDto, UpdateBookingStatusDto, BookingResponseDto } from './dto/booking.dto';
 
 @ApiTags('Bookings')
-@ApiBearerAuth('access-token')
-@UseGuards(JwtAuthGuard)
 @Controller('bookings')
 export class BookingController {
   constructor(private bookingService: BookingService) {}
 
-  @UseGuards(RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Get('my-bookings')
+  @ApiBearerAuth('access-token')
   @ApiOperation({ summary: "Get the authenticated user's booking history" })
   @ApiResponse({ status: 200, description: 'Array of bookings for the current user.', type: [BookingResponseDto] })
   @ApiResponse({ status: 403, description: 'Forbidden — user role required.' })
@@ -30,9 +29,10 @@ export class BookingController {
     return this.bookingService.findByUser(req.user.userId);
   }
 
-  @UseGuards(RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('trainer')
   @Get('my-sessions')
+  @ApiBearerAuth('access-token')
   @ApiOperation({ summary: "Get all sessions booked with the authenticated trainer" })
   @ApiResponse({ status: 200, description: 'Array of bookings assigned to the current trainer.', type: [BookingResponseDto] })
   @ApiResponse({ status: 403, description: 'Forbidden — trainer role required.' })
@@ -48,9 +48,10 @@ export class BookingController {
     return this.bookingService.findByTrainer(+id);
   }
 
-  @UseGuards(RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post()
+  @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Create a new booking and initiate Stripe checkout (user only)' })
   @ApiBody({ type: CreateBookingDto })
   @ApiResponse({ status: 201, description: 'Booking created. Returns booking details with a Stripe checkout URL.', type: BookingResponseDto })
@@ -60,8 +61,9 @@ export class BookingController {
     return this.bookingService.create({ ...body, userId: req.user.userId });
   }
 
-  @UseGuards(RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Patch(':id/status')
+  @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Update booking status (confirm or cancel)' })
   @ApiParam({ name: 'id', description: 'Booking ID', example: 7 })
   @ApiBody({ type: UpdateBookingStatusDto })
@@ -75,9 +77,10 @@ export class BookingController {
     return this.bookingService.updateStatus(+id, req.user.userId, body);
   }
 
-  @UseGuards(RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post(':id/retry-payment')
+  @ApiBearerAuth('access-token')
   @ApiOperation({ summary: 'Retry Stripe checkout for a pending or expired booking (user only)' })
   @ApiParam({ name: 'id', description: 'Booking ID', example: 7 })
   @ApiResponse({ status: 201, description: 'New Stripe checkout URL returned.' })
