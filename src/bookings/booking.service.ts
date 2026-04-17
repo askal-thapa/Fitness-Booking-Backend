@@ -151,23 +151,32 @@ export class BookingService {
   }
 
   async create(data: any) {
+    // 1. Validate user exists first (catches stale JWT / deleted accounts)
+    const userId = Number(data.userId);
+    const [user] = await this.drizzle.db.select().from(users).where(eq(users.id, userId));
+    if (!user) throw new BadRequestException('Your session is invalid. Please log out and log back in.');
+
+    // 2. Validate trainer exists
+    const [trainer] = await this.drizzle.db.select().from(trainers).where(eq(trainers.id, data.trainerId));
+    if (!trainer) throw new NotFoundException('Trainer not found');
+
+    const [trainerUser] = await this.drizzle.db.select().from(users).where(eq(users.id, trainer.userId));
+
+    // 3. Date validations
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
     const maxDate = new Date();
     maxDate.setDate(now.getDate() + 7);
     const maxDateStr = maxDate.toISOString().split('T')[0];
 
-    // 1. Validate date is not in the past
     if (data.date < todayStr) {
       throw new BadRequestException('Cannot book in the past');
     }
-
-    // 2. Validate date is within 7 days
     if (data.date > maxDateStr) {
       throw new BadRequestException('Cannot book more than 7 days in advance');
     }
 
-    // 3. Validate 5-hour lead time for same-day bookings
+    // 4. Validate 5-hour lead time for same-day bookings
     if (data.date === todayStr) {
       const currentHour = now.getHours();
       const slotHour = parseInt(data.timeSlot.split(':')[0]);
@@ -176,12 +185,8 @@ export class BookingService {
       }
     }
 
-    // 4. Validate trainer exists
-    const [trainer] = await this.drizzle.db.select().from(trainers).where(eq(trainers.id, data.trainerId));
-    if (!trainer) throw new NotFoundException('Trainer not found');
-
     // 5. Validate slot falls within trainer's availability
-    const bookingDate = new Date(data.date);
+    const bookingDate = new Date(data.date + 'T00:00:00');
     const dayOfWeek = bookingDate.getDay();
     const [availability] = await this.drizzle.db.select()
       .from(trainerAvailability)
@@ -202,12 +207,12 @@ export class BookingService {
       throw new BadRequestException(`Trainer is only available from ${availability.startTime} to ${availability.endTime} on this day`);
     }
 
-    // 6. Check for double-booking (slot already taken)
+    // 6. Check for double-booking (slot already taken by another user)
     const [existing] = await this.drizzle.db.select().from(bookings).where(and(
       eq(bookings.trainerId, data.trainerId),
-      eq(bookings.date, data.date),
+      sql`${bookings.date}::date = ${data.date}::date`,
       eq(bookings.timeSlot, data.timeSlot),
-      sql`${bookings.status} != 'cancelled'`
+      sql`${bookings.status} NOT IN ('cancelled')`
     ));
 
     if (existing) {
@@ -216,22 +221,19 @@ export class BookingService {
 
     // 7. Check user doesn't have a booking at the same time with another trainer
     const [userConflict] = await this.drizzle.db.select().from(bookings).where(and(
-      eq(bookings.userId, data.userId),
-      eq(bookings.date, data.date),
+      eq(bookings.userId, userId),
+      sql`${bookings.date}::date = ${data.date}::date`,
       eq(bookings.timeSlot, data.timeSlot),
-      sql`${bookings.status} != 'cancelled'`
+      sql`${bookings.status} NOT IN ('cancelled')`
     ));
 
     if (userConflict) {
       throw new ConflictException('You already have a booking at this time');
     }
 
-    const [user] = await this.drizzle.db.select().from(users).where(eq(users.id, data.userId));
-    if (!user) throw new NotFoundException('User not found');
-
     // 8. Create the booking
     const [newBooking] = await this.drizzle.db.insert(bookings).values({
-      userId: data.userId,
+      userId,
       trainerId: data.trainerId,
       date: data.date,
       timeSlot: data.timeSlot,
@@ -244,7 +246,6 @@ export class BookingService {
     const stripeExpiresAt = Math.floor(Date.now() / 1000) + 30 * 60;
 
     try {
-        const [trainerUser] = await this.drizzle.db.select().from(users).where(eq(users.id, trainer.userId));
         const session = await this.stripeService.createCheckoutSession({
             bookingId: newBooking.id,
             amount: trainer.pricePerSession || 50,
@@ -260,14 +261,9 @@ export class BookingService {
             })
             .where(eq(bookings.id, newBooking.id));
 
-        return {
-            ...newBooking,
-            checkoutUrl: session.url
-        };
+        return { ...newBooking, checkoutUrl: session.url };
     } catch (err) {
-        console.error("Stripe Session Creation Failed:", err);
-        // If Stripe fails, still return booking but without checkout URL
-        // This allows the booking to exist for non-Stripe flows or retry
+        console.error("Stripe error:", err.message);
         return newBooking;
     }
   }
