@@ -12,9 +12,7 @@ export class BookingService {
   ) {}
 
   async findByUser(userId: number) {
-    // Auto-complete past confirmed bookings
     await this.completePastBookings();
-    // Auto-expire old unpaid bookings
     await this.expireOldPendingBookings();
 
     return this.drizzle.db.select({
@@ -62,7 +60,6 @@ export class BookingService {
   }
 
   async findByTrainer(trainerId: number) {
-    // Only return active bookings (not cancelled) so cancelled slots show as available
     return this.drizzle.db.select().from(bookings).where(and(
       eq(bookings.trainerId, trainerId),
       sql`${bookings.status} != 'cancelled'`
@@ -98,7 +95,7 @@ export class BookingService {
     await this.drizzle.db.update(bookings)
       .set({
         stripeSessionId: session.id,
-        expiresAt: internalExpiresAt.toISOString(),
+        expiresAt: internalExpiresAt,
         paymentStatus: 'unpaid',
       })
       .where(eq(bookings.id, booking.id));
@@ -115,7 +112,7 @@ export class BookingService {
 
     let isAuthorized = false;
     if (userId === null) {
-      isAuthorized = true; // System/Webhook override
+      isAuthorized = true;
     } else if (booking.userId === userId) {
       isAuthorized = true;
     } else {
@@ -134,12 +131,10 @@ export class BookingService {
       cancellationReason: data.reason,
     };
 
-    // When confirming via webhook, also mark payment as paid
     if (data.status === 'confirmed' && userId === null) {
       updateData.paymentStatus = 'paid';
     }
 
-    // When cancelling, if payment was expired
     if (data.status === 'cancelled' && data.reason === 'Payment expired') {
       updateData.paymentStatus = 'expired';
     }
@@ -151,7 +146,7 @@ export class BookingService {
   }
 
   async create(data: any) {
-    // 1. Validate user exists first (catches stale JWT / deleted accounts)
+    // 1. Validate user exists first
     const userId = Number(data.userId);
     const [user] = await this.drizzle.db.select().from(users).where(eq(users.id, userId));
     if (!user) throw new BadRequestException('Your session is invalid. Please log out and log back in.');
@@ -207,7 +202,7 @@ export class BookingService {
       throw new BadRequestException(`Trainer is only available from ${availability.startTime} to ${availability.endTime} on this day`);
     }
 
-    // 6. Check for double-booking (slot already taken by another user)
+    // 6. Check for double-booking
     const [existing] = await this.drizzle.db.select().from(bookings).where(and(
       eq(bookings.trainerId, data.trainerId),
       sql`${bookings.date}::date = ${data.date}::date`,
@@ -219,7 +214,7 @@ export class BookingService {
       throw new ConflictException('This slot is already booked');
     }
 
-    // 7. Check user doesn't have a booking at the same time with another trainer
+    // 7. Check user doesn't have a booking at the same time
     const [userConflict] = await this.drizzle.db.select().from(bookings).where(and(
       eq(bookings.userId, userId),
       sql`${bookings.date}::date = ${data.date}::date`,
@@ -231,11 +226,12 @@ export class BookingService {
       throw new ConflictException('You already have a booking at this time');
     }
 
-    // 8. Create the booking
+    // 8. Create the booking — pass Date objects for timestamp columns
+    const bookingDateObj = new Date(data.date + 'T00:00:00');
     const [newBooking] = await this.drizzle.db.insert(bookings).values({
       userId,
       trainerId: data.trainerId,
-      date: data.date,
+      date: bookingDateObj,
       timeSlot: data.timeSlot,
       status: 'pending',
       paymentStatus: 'unpaid',
@@ -257,7 +253,7 @@ export class BookingService {
         await this.drizzle.db.update(bookings)
             .set({
                 stripeSessionId: session.id,
-                expiresAt: internalExpiresAt.toISOString()
+                expiresAt: internalExpiresAt,
             })
             .where(eq(bookings.id, newBooking.id));
 
@@ -268,20 +264,16 @@ export class BookingService {
     }
   }
 
-  // Auto-complete past confirmed bookings
   private async completePastBookings() {
-    const now = new Date().toISOString().split('T')[0];
     await this.drizzle.db.update(bookings)
       .set({ status: 'completed' })
       .where(and(
         eq(bookings.status, 'confirmed'),
-        lt(bookings.date, now)
+        sql`${bookings.date}::date < CURRENT_DATE`
       ));
   }
 
-  // Auto-cancel old unpaid pending bookings (older than 30 minutes)
   private async expireOldPendingBookings() {
-    const cutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     await this.drizzle.db.update(bookings)
       .set({
         status: 'cancelled',
@@ -291,7 +283,7 @@ export class BookingService {
       .where(and(
         eq(bookings.status, 'pending'),
         eq(bookings.paymentStatus, 'unpaid'),
-        sql`${bookings.expiresAt} IS NOT NULL AND ${bookings.expiresAt} < ${cutoff}`
+        sql`${bookings.expiresAt} IS NOT NULL AND ${bookings.expiresAt} < NOW()`
       ));
   }
 }
