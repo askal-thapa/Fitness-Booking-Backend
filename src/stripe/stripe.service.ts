@@ -15,9 +15,7 @@ export class StripeService {
     }
 
     try {
-      this.stripe = new StripeConstructor(apiKey, {
-        apiVersion: '2025-01-27' as any,
-      });
+      this.stripe = new StripeConstructor(apiKey);
     } catch (err) {
       console.error('❌ Failed to initialize Stripe:', (err as any).message);
     }
