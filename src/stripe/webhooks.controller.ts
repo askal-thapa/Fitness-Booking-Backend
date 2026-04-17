@@ -1,8 +1,16 @@
 import { Controller, Post, Headers, Req, Res, RawBodyRequest } from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiHeader,
+  ApiExcludeEndpoint,
+} from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { StripeService } from './stripe.service';
 import { BookingService } from '../bookings/booking.service';
 
+@ApiTags('Webhooks')
 @Controller('webhooks/stripe')
 export class WebhooksController {
   constructor(
@@ -11,6 +19,18 @@ export class WebhooksController {
   ) {}
 
   @Post()
+  @ApiOperation({
+    summary: 'Receive Stripe webhook events',
+    description:
+      'Handles `checkout.session.completed` (confirms booking as paid) and `checkout.session.expired` (cancels booking). Requires the raw request body and a valid `stripe-signature` header.',
+  })
+  @ApiHeader({
+    name: 'stripe-signature',
+    description: 'Stripe webhook signature for payload verification',
+    required: true,
+  })
+  @ApiResponse({ status: 200, description: 'Event received and processed.' })
+  @ApiResponse({ status: 400, description: 'Signature verification failed.' })
   async handleWebhook(
     @Headers('stripe-signature') signature: string,
     @Req() req: RawBodyRequest<Request>,
@@ -25,18 +45,14 @@ export class WebhooksController {
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Handle the event
     switch (event.type) {
       case 'checkout.session.completed':
         const session = event.data.object;
         const bookingId = parseInt(session.metadata.bookingId);
-        
-        // Update booking to paid and confirmed
         await this.bookingService.updateStatus(bookingId, null, { status: 'confirmed' });
-        
         console.log(`Payment successful for booking ${bookingId}`);
         break;
-        
+
       case 'checkout.session.expired':
         const expiredSession = event.data.object;
         const expiredBookingId = parseInt(expiredSession.metadata.bookingId);
