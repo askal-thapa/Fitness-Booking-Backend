@@ -12,6 +12,7 @@ import { TrainerController } from './trainers/trainer.controller';
 import { CloudinaryService } from './trainers/cloudinary.service';
 import { BookingService } from './bookings/booking.service';
 import { BookingController } from './bookings/booking.controller';
+import { AppController } from './app.controller';
 import { JwtStrategy } from './auth/jwt.strategy';
 import { StripeModule } from './stripe/stripe.module';
 
@@ -34,7 +35,7 @@ class DbModule {}
     DbModule,
     StripeModule,
   ],
-  controllers: [AuthController, OnboardingController, TrainerController, BookingController],
+  controllers: [AppController, AuthController, OnboardingController, TrainerController, BookingController],
   providers: [AuthService, OnboardingService, TrainerService, CloudinaryService, BookingService, JwtStrategy],
 })
 export class AppModule {}
