@@ -10,18 +10,14 @@ export class CreateBookingDto {
   @IsDateString()
   date: string;
 
-  @ApiProperty({ example: '10:00', description: 'Session start time (HH:mm)' })
+  @ApiProperty({ example: '10:00', description: 'Time slot (HH:mm)' })
   @IsString()
-  startTime: string;
-
-  @ApiProperty({ example: '11:00', description: 'Session end time (HH:mm)' })
-  @IsString()
-  endTime: string;
+  timeSlot: string;
 }
 
 export class UpdateBookingStatusDto {
-  @ApiProperty({ enum: ['pending', 'confirmed', 'cancelled'], example: 'cancelled' })
-  @IsIn(['pending', 'confirmed', 'cancelled'])
+  @ApiProperty({ enum: ['pending', 'confirmed', 'cancelled', 'completed'], example: 'cancelled' })
+  @IsIn(['pending', 'confirmed', 'cancelled', 'completed'])
   status: string;
 
   @ApiPropertyOptional({ example: 'Schedule conflict' })
@@ -44,13 +40,13 @@ export class BookingResponseDto {
   date: string;
 
   @ApiProperty({ example: '10:00' })
-  startTime: string;
+  timeSlot: string;
 
-  @ApiProperty({ example: '11:00' })
-  endTime: string;
-
-  @ApiProperty({ enum: ['pending', 'confirmed', 'cancelled'], example: 'pending' })
+  @ApiProperty({ enum: ['pending', 'confirmed', 'cancelled', 'completed'], example: 'pending' })
   status: string;
+
+  @ApiProperty({ enum: ['unpaid', 'paid', 'expired'], example: 'unpaid' })
+  paymentStatus: string;
 
   @ApiPropertyOptional({ example: 'https://checkout.stripe.com/...' })
   checkoutUrl?: string;
