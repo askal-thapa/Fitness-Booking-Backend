@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNumber, IsOptional, IsBoolean, Min, Max, IsIn } from 'class-validator';
+import { IsString, IsNumber, IsOptional, IsBoolean, Min, Max, IsIn, IsArray, IsUrl } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class TrainerQueryDto {
@@ -36,10 +36,17 @@ export class UpdateTrainerProfileDto {
   @IsNumber()
   pricePerSession?: number;
 
-  @ApiPropertyOptional({ example: 'Flexibility' })
+  @ApiPropertyOptional({ example: ['Flexibility', 'Endurance'], type: [String] })
   @IsOptional()
-  @IsString()
-  focus?: string;
+  @IsArray()
+  @IsString({ each: true })
+  focus?: string[];
+
+  @ApiPropertyOptional({ example: ['Yoga', 'Strength Training'], type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  specialties?: string[];
 
   @ApiPropertyOptional({ example: 2, minimum: 1, maximum: 5 })
   @IsOptional()
@@ -52,6 +59,11 @@ export class UpdateTrainerProfileDto {
   @IsOptional()
   @IsString()
   location?: string;
+
+  @ApiPropertyOptional({ example: 'https://res.cloudinary.com/.../profile.jpg' })
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  imageUrl?: string;
 }
 
 export class AvailabilitySlotDto {

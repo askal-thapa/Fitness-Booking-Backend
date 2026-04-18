@@ -15,11 +15,12 @@ import { BookingController } from './bookings/booking.controller';
 import { AppController } from './app.controller';
 import { JwtStrategy } from './auth/jwt.strategy';
 import { StripeModule } from './stripe/stripe.module';
+import { EmbeddingService } from './embeddings/embedding.service';
 
 @Global()
 @Module({
-  providers: [DrizzleService],
-  exports: [DrizzleService],
+  providers: [DrizzleService, EmbeddingService],
+  exports: [DrizzleService, EmbeddingService],
 })
 class DbModule {}
 

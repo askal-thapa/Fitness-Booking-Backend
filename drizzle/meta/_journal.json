@@ -8,6 +8,20 @@
       "when": 1776404823557,
       "tag": "0000_right_killer_shrike",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776600000000,
+      "tag": "0001_unify_profile_image",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776700000000,
+      "tag": "0002_embeddings",
+      "breakpoints": true
     }
   ]
 }

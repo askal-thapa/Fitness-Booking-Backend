@@ -25,7 +25,7 @@ export class BookingService {
       cancellationReason: bookings.cancellationReason,
       trainerName: users.fullName,
       trainerSpecialty: trainers.specialty,
-      trainerImageUrl: trainers.imageUrl,
+      trainerImageUrl: users.imageUrl,
       trainerId: bookings.trainerId,
       isReviewed: sql<boolean>`CASE WHEN ${reviews.id} IS NOT NULL THEN true ELSE false END`,
     })

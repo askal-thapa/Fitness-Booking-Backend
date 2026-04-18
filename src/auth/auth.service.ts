@@ -36,7 +36,6 @@ export class AuthService {
         specialty: 'General Fitness',
         bio: 'Professional trainer at Askal.',
         pricePerSession: 50,
-        focus: 'General',
         intensity: 3,
         location: 'Gym',
       }).returning();

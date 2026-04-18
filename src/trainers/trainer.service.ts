@@ -2,10 +2,54 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { DrizzleService } from '../db/drizzle.service';
 import { trainers, users, trainerAvailability, onboardingData, reviews, bookings, specialties, trainingFocus, trainerSpecialties, trainerTrainingFocus } from '../db/schema';
 import { eq, and, sql, avg, count, desc, lt, inArray } from 'drizzle-orm';
+import { EmbeddingService } from '../embeddings/embedding.service';
 
 @Injectable()
 export class TrainerService {
-  constructor(private drizzle: DrizzleService) {}
+  constructor(
+    private drizzle: DrizzleService,
+    private embeddings: EmbeddingService,
+  ) {}
+
+  // Best-effort: refresh the trainer's semantic embedding from their current profile
+  private async refreshTrainerEmbedding(trainerId: number) {
+    try {
+      const [t] = await this.drizzle.db.select({
+        name: users.fullName,
+        specialty: trainers.specialty,
+        bio: trainers.bio,
+        intensity: trainers.intensity,
+        location: trainers.location,
+      })
+        .from(trainers)
+        .innerJoin(users, eq(trainers.userId, users.id))
+        .where(eq(trainers.id, trainerId));
+      if (!t) return;
+
+      const focusLinks = await this.drizzle.db
+        .select({ name: trainingFocus.name })
+        .from(trainerTrainingFocus)
+        .innerJoin(trainingFocus, eq(trainerTrainingFocus.focusId, trainingFocus.id))
+        .where(eq(trainerTrainingFocus.trainerId, trainerId));
+      const specLinks = await this.drizzle.db
+        .select({ name: specialties.name })
+        .from(trainerSpecialties)
+        .innerJoin(specialties, eq(trainerSpecialties.specialtyId, specialties.id))
+        .where(eq(trainerSpecialties.trainerId, trainerId));
+
+      const text = this.embeddings.trainerText({
+        ...t,
+        focus: focusLinks.map(f => f.name),
+        specialties: specLinks.map(s => s.name),
+      });
+      const vec = await this.embeddings.embed(text, 'RETRIEVAL_DOCUMENT');
+      if (vec) {
+        await this.drizzle.db.update(trainers).set({ embedding: vec }).where(eq(trainers.id, trainerId));
+      }
+    } catch {
+      // Best-effort — never block the request
+    }
+  }
 
   private async completePastBookings() {
     const now = new Date().toISOString().split('T')[0];
@@ -78,7 +122,7 @@ export class TrainerService {
       id: trainers.id,
       specialty: trainers.specialty,
       bio: trainers.bio,
-      imageUrl: trainers.imageUrl,
+      imageUrl: users.imageUrl,
       rating: trainers.rating,
       name: users.fullName,
       pricePerSession: trainers.pricePerSession,
@@ -113,9 +157,14 @@ export class TrainerService {
     'yoga': { 'Flexibility': 1.0, 'Consultant': 0.3 },
   };
 
-  // Maps activity levels to normalized intensity (0-1)
+  // Maps activity levels to normalized intensity (0-1).
+  // Keys mirror the SaveOnboardingDto enum exactly.
   private readonly ACTIVITY_MAP: Record<string, number> = {
-    'sedentary': 0.1, 'lightly active': 0.35, 'active': 0.65, 'very active': 0.9,
+    'sedentary': 0.1,
+    'light': 0.3,
+    'moderate': 0.5,
+    'active': 0.7,
+    'very_active': 0.9,
   };
 
   // Maps experience levels to normalized intensity (0-1)
@@ -183,12 +232,43 @@ export class TrainerService {
     const allTrainers = await this.findAll();
     const userVector = this.buildUserVector(userProfile);
 
+    // Pull all trainer embeddings keyed by trainer id (single round-trip)
+    const trainerEmbeds = await this.drizzle.db
+      .select({ id: trainers.id, embedding: trainers.embedding })
+      .from(trainers);
+    const embedById = new Map<number, number[] | null>();
+    trainerEmbeds.forEach((row: any) => embedById.set(row.id, row.embedding || null));
+
+    // Use the user's stored embedding if present, otherwise generate one on-the-fly
+    let userEmbedding: number[] | null = (userProfile as any).embedding || null;
+    if (!userEmbedding) {
+      userEmbedding = await this.embeddings.embed(
+        this.embeddings.userText(userProfile as any),
+        'RETRIEVAL_QUERY',
+      );
+      if (userEmbedding) {
+        // Cache for next call
+        await this.drizzle.db.update(onboardingData).set({ embedding: userEmbedding }).where(eq(onboardingData.userId, userId));
+      }
+    }
+
     const scored = allTrainers.map(trainer => {
       const trainerVector = this.buildTrainerVector(trainer);
 
-      // Core similarity via cosine (0-1), scaled to 0-60
-      const similarity = this.cosineSimilarity(userVector, trainerVector);
-      let score = similarity * 60;
+      // Rule-based cosine over hand-crafted feature space (0-1) → 0-40
+      const ruleSim = this.cosineSimilarity(userVector, trainerVector);
+      let score = ruleSim * 40;
+
+      // Semantic similarity via Gemini embeddings (0-1) → 0-30
+      const trainerEmb = embedById.get(trainer.id);
+      let semanticSim = 0;
+      if (userEmbedding && trainerEmb) {
+        semanticSim = Math.max(0, this.embeddings.cosineSimilarity(userEmbedding, trainerEmb));
+        score += semanticSim * 30;
+      } else {
+        // No embedding available — give the rule-based score the missing weight
+        score += ruleSim * 30;
+      }
 
       // Rating quality bonus (0-10)
       const ratingScore = ((trainer.rating || 5) / 5) * 10;
@@ -215,9 +295,14 @@ export class TrainerService {
         matchReasons.push('Matches your fitness level');
       }
 
+      if (semanticSim >= 0.7) matchReasons.push('AI-matched to your goals');
       if (trainer.rating >= 4.5) matchReasons.push('Highly rated');
 
-      const confidencePercent = Math.min(99, Math.round(similarity * 100));
+      // Confidence: blended semantic + rule signal
+      const blendedSim = userEmbedding && trainerEmb
+        ? semanticSim * 0.65 + ruleSim * 0.35
+        : ruleSim;
+      const confidencePercent = Math.min(99, Math.round(blendedSim * 100));
 
       return {
         ...trainer,
@@ -235,7 +320,7 @@ export class TrainerService {
       id: trainers.id,
       specialty: trainers.specialty,
       bio: trainers.bio,
-      imageUrl: trainers.imageUrl,
+      imageUrl: users.imageUrl,
       rating: trainers.rating,
       name: users.fullName,
       pricePerSession: trainers.pricePerSession,
@@ -345,9 +430,15 @@ export class TrainerService {
         pricePerSession: data.pricePerSession,
         intensity: data.intensity,
         location: data.location,
-        imageUrl: data.imageUrl,
       })
       .where(eq(trainers.id, trainer.id));
+
+    // Profile image lives on the user record (single source of truth)
+    if (data.imageUrl !== undefined) {
+      await this.drizzle.db.update(users)
+        .set({ imageUrl: data.imageUrl })
+        .where(eq(users.id, userId));
+    }
 
     // Update Specialties
     if (data.specialties) {
@@ -371,6 +462,9 @@ export class TrainerService {
       if (toInsert.length > 0) await this.drizzle.db.insert(trainerTrainingFocus).values(toInsert);
     }
 
+    // Refresh semantic embedding in the background — fire-and-forget
+    void this.refreshTrainerEmbedding(trainer.id);
+
     return this.findOne(trainer.id);
   }
 
@@ -378,9 +472,9 @@ export class TrainerService {
     const [trainer] = await this.drizzle.db.select().from(trainers).where(eq(trainers.userId, userId));
     if (!trainer) throw new NotFoundException('Trainer not found');
 
-    await this.drizzle.db.update(trainers)
+    await this.drizzle.db.update(users)
       .set({ imageUrl })
-      .where(eq(trainers.id, trainer.id));
+      .where(eq(users.id, userId));
 
     return { imageUrl };
   }

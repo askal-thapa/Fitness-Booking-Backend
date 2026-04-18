@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, varchar, boolean, doublePrecision } from 'drizzle-orm/pg-core';
+import { pgTable, text, serial, integer, timestamp, varchar, boolean, doublePrecision, jsonb } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -23,6 +23,7 @@ export const onboardingData = pgTable('onboarding_data', {
   healthConditions: text('health_conditions').notNull(), // JSON string
   workoutType: text('workout_type').notNull(),
   dietPreference: text('diet_preference').notNull(),
+  embedding: jsonb('embedding'), // float[] from gemini-embedding-001
 });
 
 export const specialties = pgTable('specialties', {
@@ -40,11 +41,11 @@ export const trainers = pgTable('trainers', {
   userId: integer('user_id').notNull().references(() => users.id),
   specialty: text('specialty').notNull(), // Display specialty (e.g. "Elite conditioning coach")
   bio: text('bio').notNull(),
-  imageUrl: text('image_url'),
   rating: doublePrecision('rating').default(5),
   pricePerSession: doublePrecision('price_per_session').notNull().default(0),
   intensity: integer('intensity').default(3), // 1-5
   location: text('location').notNull().default('Gym'),
+  embedding: jsonb('embedding'), // float[] from gemini-embedding-001
 });
 
 export const trainerSpecialties = pgTable('trainer_specialties', {
