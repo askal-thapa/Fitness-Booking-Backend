@@ -1,6 +1,6 @@
 # Askal Fitness Booking API
 
-REST API backend for the Askal fitness booking platform. Built with NestJS 11, PostgreSQL, Drizzle ORM, Stripe Payments, and Cloudinary.
+REST API backend for the Askal fitness booking platform. Built with NestJS 11, PostgreSQL, Drizzle ORM, Stripe Payments, Cloudinary, and Google Gemini Embeddings.
 
 **Live API:** `https://askal.prajwolghimire.com.np`
 **Swagger Docs:** `https://askal.prajwolghimire.com.np/api/docs`
@@ -21,6 +21,7 @@ REST API backend for the Askal fitness booking platform. Built with NestJS 11, P
 - [Booking Lifecycle](#booking-lifecycle)
 - [Payment Integration (Stripe)](#payment-integration-stripe)
 - [Recommendation Engine](#recommendation-engine)
+- [Semantic Embeddings](#semantic-embeddings)
 - [Edge Cases & Validations](#edge-cases--validations)
 
 ---
@@ -35,6 +36,7 @@ REST API backend for the Askal fitness booking platform. Built with NestJS 11, P
 | Passport + JWT | Authentication |
 | Stripe | Payment processing |
 | Cloudinary | Image upload and CDN |
+| Google Gemini (`gemini-embedding-001`) | Semantic embeddings for AI recommendations |
 | Docker | Containerization |
 | Swagger / OpenAPI | API documentation |
 | bcrypt | Password hashing |
@@ -61,7 +63,7 @@ src/
 
   trainers/
     trainer.controller.ts # 8 endpoints for trainer CRUD, search, reviews
-    trainer.service.ts    # Trainer logic + vector-based recommendation engine
+    trainer.service.ts    # Trainer logic + blended recommendation engine
     cloudinary.service.ts # Cloudinary image upload wrapper
     dto/trainer.dto.ts    # TrainerQueryDto, UpdateTrainerProfileDto, etc.
 
@@ -72,8 +74,11 @@ src/
 
   onboarding/
     onboarding.controller.ts # 3 endpoints for fitness profile
-    onboarding.service.ts    # Upsert onboarding data + image upload
+    onboarding.service.ts    # Upsert onboarding data + embedding refresh
     dto/onboarding.dto.ts    # SaveOnboardingDto
+
+  embeddings/
+    embedding.service.ts  # Google Gemini embedding API wrapper + cosine similarity + corpus builders
 
   stripe/
     stripe.module.ts       # Stripe module with service + webhook controller
@@ -81,9 +86,9 @@ src/
     webhooks.controller.ts # POST /webhooks/stripe — handles payment events
 
   db/
-    schema.ts        # Complete Drizzle schema (10 tables)
+    schema.ts        # Complete Drizzle schema (10 tables + embedding columns)
     drizzle.service.ts # PostgreSQL connection pool
-    seed.ts          # Database seeding script
+    seed.ts          # Database seeding script (10 trainers, 8 users, pre-computed embeddings)
 ```
 
 ---
@@ -96,6 +101,7 @@ src/
 - PostgreSQL 16+
 - Stripe account (test mode)
 - Cloudinary account
+- Google AI API key (for Gemini embeddings — optional, degrades gracefully)
 
 ### Installation
 
@@ -117,7 +123,7 @@ cp .env.example .env
 ```bash
 npm run db:generate   # Generate migrations from schema
 npm run db:migrate    # Apply migrations to PostgreSQL
-npm run db:seed       # Seed with sample data (optional)
+npm run db:seed       # Seed with 10 trainers + 8 users (all with embeddings)
 ```
 
 ### Run Development Server
@@ -177,6 +183,9 @@ Single `api` service:
 | `STRIPE_SECRET_KEY` | Stripe secret key (test or live) | `sk_test_...` |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret | `whsec_...` |
 | `FRONTEND_URL` | Frontend app URL (for Stripe redirects) | `https://your-frontend.vercel.app` |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google AI API key for Gemini embeddings | `AIza...` |
+
+> **Note:** `GOOGLE_GENERATIVE_AI_API_KEY` is optional. If omitted, semantic embeddings are skipped and recommendations fall back to the rule-based engine only. The app degrades gracefully with a warning log.
 
 ---
 
@@ -185,10 +194,10 @@ Single `api` service:
 ### Entity Relationship
 
 ```
-users (1) ──── (1) onboarding_data
+users (1) ──── (1) onboarding_data  [embedding: jsonb]
   │
   │ (1:1 for trainers)
-  ├──── trainers (1) ──── (N) trainer_availability
+  ├──── trainers (1) ──── (N) trainer_availability   [embedding: jsonb]
   │       │
   │       ├──── (M:N) specialties       [via trainer_specialties]
   │       ├──── (M:N) training_focus    [via trainer_training_focus]
@@ -201,9 +210,9 @@ users (1) ──── (1) onboarding_data
 
 | Table | Purpose | Key Fields |
 |---|---|---|
-| `users` | All user accounts | email (unique), password (bcrypt), role (user/trainer), onboardingCompleted |
-| `onboarding_data` | Fitness profile (1:1 with users) | goal, age, height, weight, activityLevel, experienceLevel, healthConditions (JSON), workoutType, dietPreference |
-| `trainers` | Trainer profiles (1:1 with users) | specialty, bio, imageUrl, rating, pricePerSession, intensity (1-5), location |
+| `users` | All user accounts | email (unique), password (bcrypt), role (user/trainer), imageUrl, fullName, onboardingCompleted |
+| `onboarding_data` | Fitness profile (1:1 with users) | goal, age, height, weight, activityLevel, experienceLevel, healthConditions (JSON), workoutType, dietPreference, **embedding** (jsonb) |
+| `trainers` | Trainer profiles (1:1 with users) | specialty, bio, rating, pricePerSession, intensity (1-5), location, **embedding** (jsonb) |
 | `trainer_availability` | Weekly schedule (1:N with trainers) | dayOfWeek (0=Sun..6=Sat), startTime, endTime, isClosed |
 | `bookings` | Session bookings | date, timeSlot, status (pending/confirmed/cancelled/completed), paymentStatus (unpaid/paid/expired), stripeSessionId, expiresAt |
 | `reviews` | Session reviews (1:1 with bookings) | rating (1-5), comment |
@@ -211,6 +220,15 @@ users (1) ──── (1) onboarding_data
 | `training_focus` | Lookup table | name |
 | `trainer_specialties` | Junction (M:N) | trainerId, specialtyId (cascade delete) |
 | `trainer_training_focus` | Junction (M:N) | trainerId, focusId (cascade delete) |
+
+> **Profile image consolidation:** Trainer profile images are stored in `users.imageUrl` (single source of truth). There is no separate `imageUrl` column on the `trainers` table. This was unified via migration `0001_unify_profile_image.sql`.
+
+### Migrations
+
+| Migration | Description |
+|---|---|
+| `0001_unify_profile_image.sql` | Copies any trainer-specific imageUrl values to the users table, then drops the redundant column |
+| `0002_embeddings.sql` | Adds `embedding jsonb` columns to `trainers` and `onboarding_data` for semantic similarity |
 
 ---
 
@@ -235,7 +253,7 @@ users (1) ──── (1) onboarding_data
 
 | Method | Route | Role | Description |
 |---|---|---|---|
-| `POST` | `/onboarding` | user | Save/update fitness onboarding profile |
+| `POST` | `/onboarding` | user | Save/update fitness onboarding profile (triggers embedding refresh) |
 | `GET` | `/onboarding/me` | user, trainer | Get merged onboarding + user data |
 | `POST` | `/onboarding/me/image` | user | Upload profile photo (multipart/form-data) |
 
@@ -243,14 +261,14 @@ users (1) ──── (1) onboarding_data
 
 | Method | Route | Auth | Description |
 |---|---|---|---|
-| `GET` | `/trainers` | Public | List all trainers with optional filters |
-| `GET` | `/trainers/recommended` | JWT | Get AI-recommended trainers based on onboarding profile |
+| `GET` | `/trainers` | Public | List all trainers with optional filters (price, location, intensity, rating, focus) |
+| `GET` | `/trainers/recommended` | JWT | Get AI-recommended trainers (blended semantic + rule-based) |
 | `GET` | `/trainers/:id` | Public | Get trainer detail with availability, reviews, and session count |
 | `GET` | `/trainers/me` | JWT + trainer | Get own trainer profile |
 | `POST` | `/trainers/review` | JWT + user | Submit a review for a completed session |
-| `PUT` | `/trainers/me` | JWT + trainer | Update trainer profile details |
+| `PUT` | `/trainers/me` | JWT + trainer | Update trainer profile details (triggers embedding refresh) |
 | `PUT` | `/trainers/me/availability` | JWT + trainer | Update weekly availability schedule |
-| `POST` | `/trainers/me/image` | JWT + trainer | Upload trainer profile image |
+| `POST` | `/trainers/me/image` | JWT + trainer | Upload trainer profile image (stored to users.imageUrl) |
 
 ### Bookings
 
@@ -409,217 +427,83 @@ Users can retry payment for pending/unpaid bookings. A new Stripe checkout sessi
 
 ## Recommendation Engine
 
-The trainer recommendation system uses a **Content-Based Filtering** approach with **Vector Space Model (VSM)** and **Cosine Similarity** to match users with trainers based on their onboarding profile.
+The trainer recommendation system uses a **blended scoring model** combining rule-based vector similarity with semantic embeddings from Google Gemini to match users with trainers.
 
-### Model Overview
+### Scoring Formula
 
 ```
-                    User Onboarding Data
-                           │
-                    ┌──────┴──────┐
-                    │             │
-              Goal Vector    Workout Vector
-              (weight: 0.6)  (weight: 0.4)
-                    │             │
-                    └──────┬──────┘
-                           │
-                    Weighted Merge
-                           │
-                    ┌──────┴──────┐
-                    │  10-D User  │
-                    │   Vector    │
-                    └──────┬──────┘
-                           │
-                    Cosine Similarity ──── 10-D Trainer Vectors
-                           │
-                    ┌──────┴──────┐
-                    │ Composite   │
-                    │   Score     │ = similarity(60%) + rating(10%) + overlap(20%)
-                    └──────┬──────┘
-                           │
-                    Top 4 Ranked Trainers
+Score(user, trainer) =
+    (0.40 × rule_similarity)   +   rule-based 10-D cosine similarity
+    (0.30 × semantic_cosine)   +   Gemini embedding cosine similarity
+    (0.10 × rating_bonus)      +   normalized trainer rating
+    (0.20 × focus_overlap)         shared goal category overlap
+
+Falls back to 0.80 × rule_similarity when no embeddings are stored yet.
 ```
 
-### Mathematical Model
-
-#### Step 1: Feature Space Definition
+### Rule-Based Vector Model
 
 The system operates in a **10-dimensional feature space** defined by 9 fitness categories plus an intensity dimension:
 
 ```
-C = {c₁, c₂, ..., c₉, c₁₀}
-
-where:
-  c₁  = Weight Loss
-  c₂  = Muscle Building
-  c₃  = Endurance
-  c₄  = Flexibility
-  c₅  = Consultant
-  c₆  = Diet Planner
-  c₇  = HIIT
-  c₈  = Strength Training
-  c₉  = Cardio
-  c₁₀ = Intensity (derived)
+C = { Weight Loss, Muscle Building, Endurance, Flexibility,
+      Consultant, Diet Planner, HIIT, Strength Training, Cardio, Intensity }
 ```
 
-#### Step 2: User Vector Construction
-
-The user vector **U** is built by combining two sub-vectors with a weighted merge:
-
+**User vector** is built from onboarding data:
 ```
-U = α · G(goal) + β · W(workoutType)     for dimensions c₁..c₉
-U₁₀ = (A(activityLevel) + E(experienceLevel)) / 2    for dimension c₁₀
-
-where α = 0.6, β = 0.4
+U_categories = 0.6 × Goal_vector(goal) + 0.4 × Workout_vector(workoutType)
+U_intensity  = (Activity_score(activityLevel) + Experience_score(experienceLevel)) / 2
 ```
 
-**Goal Vectors G(goal):**
-
-| Goal | c₁ | c₂ | c₃ | c₄ | c₅ | c₆ | c₇ | c₈ | c₉ |
-|---|---|---|---|---|---|---|---|---|---|
-| Lose Weight | 0.9 | 0.2 | 0.5 | 0.3 | 0.2 | 0.6 | 0.7 | 0.3 | 0.8 |
-| Build Muscle | 0.2 | 0.9 | 0.4 | 0.2 | 0.1 | 0.4 | 0.5 | 0.9 | 0.3 |
-| Stay Fit | 0.4 | 0.4 | 0.7 | 0.6 | 0.3 | 0.3 | 0.5 | 0.5 | 0.7 |
-| Improve Health | 0.3 | 0.2 | 0.5 | 0.7 | 0.8 | 0.6 | 0.3 | 0.2 | 0.4 |
-
-**Workout Type Vectors W(workoutType):**
-
-| Workout | c₁ | c₂ | c₃ | c₄ | c₅ | c₆ | c₇ | c₈ | c₉ |
-|---|---|---|---|---|---|---|---|---|---|
-| Gym | 0.5 | 0.8 | 0.5 | 0.2 | 0.1 | 0.2 | 0.6 | 0.9 | 0.5 |
-| Home | 0.6 | 0.4 | 0.5 | 0.7 | 0.3 | 0.3 | 0.8 | 0.3 | 0.7 |
-| Yoga | 0.3 | 0.1 | 0.3 | 0.9 | 0.5 | 0.4 | 0.2 | 0.1 | 0.3 |
-
-**Activity Level Mapping A(level):**
-
-| Level | Score |
-|---|---|
-| sedentary | 0.2 |
-| light | 0.4 |
-| moderate | 0.6 |
-| active | 0.8 |
-| very_active | 1.0 |
-
-**Experience Level Mapping E(level):**
-
-| Level | Score |
-|---|---|
-| beginner | 0.3 |
-| intermediate | 0.6 |
-| advanced | 0.9 |
-
-#### Step 3: Trainer Vector Construction
-
-For each trainer **T**, the vector is built from their focus areas and specialties:
-
+**Trainer vector** is built from focus areas and specialties:
 ```
 Tᵢ = 1.0   if category cᵢ ∈ trainer.focus
 Tᵢ = 0.7   if category cᵢ ∈ trainer.specialties (but not in focus)
 Tᵢ = 0.0   otherwise
-
-T₁₀ = (trainer.intensity - 1) / 4     normalized to [0, 1]
+T_intensity = (trainer.intensity - 1) / 4   normalized to [0, 1]
 ```
 
-#### Step 4: Cosine Similarity
+Activity level mapping: `sedentary=0.2 | light=0.4 | moderate=0.6 | active=0.8 | very_active=1.0`
 
-The similarity between user vector **U** and trainer vector **T** is computed using cosine similarity:
-
-```
-                    n
-                   Σ  Uᵢ · Tᵢ
-                   i=1
-sim(U, T) = ─────────────────────────
-              ┌─  n      ┐   ┌─  n      ┐
-              │  Σ  Uᵢ²  │ · │  Σ  Tᵢ²  │
-              └─ i=1     ─┘   └─ i=1     ─┘
-
-where n = 10 (dimensions)
-```
-
-Returns a value in `[0, 1]` where 1 = perfect alignment.
-
-#### Step 5: Composite Scoring
-
-The final score combines three signals:
-
-```
-S(U, T) = (sim(U, T) × 60) + R(T) + O(U, T)
-
-where:
-  sim(U, T) × 60  = similarity component (0-60 points)
-  R(T)             = rating quality bonus (0-10 points)
-  O(U, T)          = goal overlap bonus (0-20 points)
-```
-
-**Rating Bonus R(T):**
-```
-R(T) = (trainer.rating / 5) × 10
-
-Example: 4.5 rating → (4.5/5) × 10 = 9.0 points
-```
-
-**Goal Overlap Bonus O(U, T):**
-```
-O(U, T) = (number of matching focus/specialty categories with user's top goal categories / total top categories) × 20
-
-Top categories = categories where G(goal)ᵢ ≥ 0.6
-```
-
-#### Step 6: Ranking and Output
-
-```
-1. Compute S(U, T) for all trainers T
-2. Sort by score descending
-3. Select top 4
-4. For each trainer, compute:
-   - matchScore = S (0-100)
-   - matchConfidence = min(S, 99) as percentage
-   - matchReasons = human-readable explanation strings
-```
+Experience level mapping: `beginner=0.3 | intermediate=0.6 | advanced=0.9`
 
 ### Match Reasons Generation
-
-The system generates contextual reasons for each match:
 
 | Condition | Reason Example |
 |---|---|
 | Trainer focus overlaps user's goal categories | "Specializes in Weight Loss & Cardio" |
 | Intensity difference ≤ 1 | "Matches your fitness level" |
 | Rating ≥ 4.5 | "Highly rated (4.8 stars)" |
-| Trainer location matches workout type | "Available at Gym" |
-
-### Example Calculation
-
-```
-User: goal = "Lose Weight", workout = "Gym", activity = "active", experience = "intermediate"
-
-User Vector:
-  c₁..c₉ = 0.6 × G("Lose Weight") + 0.4 × W("Gym")
-  c₁  = 0.6(0.9) + 0.4(0.5) = 0.74  (Weight Loss)
-  c₂  = 0.6(0.2) + 0.4(0.8) = 0.44  (Muscle Building)
-  c₇  = 0.6(0.7) + 0.4(0.6) = 0.66  (HIIT)
-  c₈  = 0.6(0.3) + 0.4(0.9) = 0.54  (Strength Training)
-  c₉  = 0.6(0.8) + 0.4(0.5) = 0.68  (Cardio)
-  c₁₀ = (0.8 + 0.6) / 2 = 0.7       (Intensity)
-
-Trainer A: focus = [Weight Loss, Cardio, HIIT], intensity = 4
-  T = [1.0, 0, 0, 0, 0, 0, 1.0, 0, 1.0, 0.75]
-
-Cosine Similarity = dot(U, T) / (||U|| × ||T||)
-                  = (0.74×1 + 0.66×1 + 0.68×1 + 0.7×0.75) / (||U|| × ||T||)
-                  ≈ 0.87
-
-Score = (0.87 × 60) + (4.5/5 × 10) + (3/3 × 20)
-      = 52.2 + 9.0 + 20.0
-      = 81.2
-
-matchConfidence: 81%
-matchReasons: ["Specializes in Weight Loss & Cardio", "Matches your fitness level"]
-```
+| Semantic score high | "Strong profile alignment" |
 
 ### Fallback
 
-If the user has no onboarding profile, the system falls back to returning all trainers (unranked).
+If the user has no onboarding profile, the system falls back to returning all trainers unranked. If embeddings are unavailable (no API key), rule-based scoring is doubled (×0.8 weight) to compensate.
+
+---
+
+## Semantic Embeddings
+
+The `EmbeddingService` generates dense vector representations of trainer profiles and user onboarding data using **Google Gemini `gemini-embedding-001`** (3072-dimensional vectors stored as `jsonb`).
+
+### How It Works
+
+1. **Corpus building:** `trainerText()` and `userText()` methods serialize profiles into natural language descriptions optimized for retrieval.
+2. **Embedding generation:** Calls `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent` with the appropriate `taskType`.
+3. **Storage:** Vectors stored as `jsonb` in `trainers.embedding` and `onboarding_data.embedding`.
+4. **Retrieval:** Cosine similarity is computed in-process at query time.
+
+### When Embeddings Are Refreshed
+
+- **Trainers:** After `PUT /trainers/me` (profile update) — fire-and-forget, never blocks the HTTP response.
+- **Users:** After `POST /onboarding` (onboarding save) — fire-and-forget, never blocks the HTTP response.
+- **Seed:** All 10 trainers and 8 users in `seed.ts` have embeddings pre-computed at seed time.
+
+### Graceful Degradation
+
+- Missing `GOOGLE_GENERATIVE_AI_API_KEY` → logs a warning, skips embedding, falls back to rule-only recommendations.
+- API errors → caught silently, embedding column left unchanged.
 
 ---
 
@@ -647,11 +531,13 @@ If the user has no onboarding profile, the system falls back to returning all tr
 - Cannot review future sessions → `400 Bad Request`
 - Rating recalculated after each new review
 - Availability update is full replacement (delete all, insert new)
+- `PUT /trainers/me` rejects unknown fields (`forbidNonWhitelisted: true`) — `imageUrl` is submitted separately via `/trainers/me/image`
 
 ### Onboarding
 - `healthConditions` stored as JSON string, parsed on read with fallback to empty array
 - Save is idempotent (upsert pattern)
 - Sets `onboardingCompleted = true` on the user record within a transaction
+- Embedding refresh runs after the transaction commits (non-blocking)
 
 ### Stripe
 - Missing `STRIPE_SECRET_KEY` → service degrades gracefully (warns at startup, throws on checkout attempt)
