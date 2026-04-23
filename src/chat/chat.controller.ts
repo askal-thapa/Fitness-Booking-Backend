@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Req, UseGuards, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards, ParseIntPipe, Param } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ChatService } from './chat.service';
 
@@ -15,5 +15,10 @@ export class ChatController {
   @Get('conversations')
   getConversations(@Req() req: any) {
     return this.chatService.getConversations(req.user.userId);
+  }
+
+  @Get('user/:id')
+  getUser(@Param('id', ParseIntPipe) id: number) {
+    return this.chatService.getUserInfo(id);
   }
 }

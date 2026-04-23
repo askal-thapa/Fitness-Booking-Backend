@@ -29,6 +29,14 @@ export class ChatService {
       .limit(100);
   }
 
+  async getUserInfo(userId: number) {
+    const [user] = await this.drizzle.db
+      .select({ id: users.id, name: users.fullName, imageUrl: users.imageUrl })
+      .from(users)
+      .where(eq(users.id, userId));
+    return user || null;
+  }
+
   async getConversations(userId: number) {
     const sent = await this.drizzle.db
       .selectDistinct({ otherId: messages.toUserId })
