@@ -4,11 +4,14 @@ import {
   ApiOperation,
   ApiResponse,
   ApiHeader,
-  ApiExcludeEndpoint,
 } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { StripeService } from './stripe.service';
 import { BookingService } from '../bookings/booking.service';
+import { MailService } from '../mail/mail.service';
+import { DrizzleService } from '../db/drizzle.service';
+import { bookings, trainers, users } from '../db/schema';
+import { eq } from 'drizzle-orm';
 
 @ApiTags('Webhooks')
 @Controller('webhooks/stripe')
@@ -16,6 +19,8 @@ export class WebhooksController {
   constructor(
     private stripeService: StripeService,
     private bookingService: BookingService,
+    private mailService: MailService,
+    private drizzle: DrizzleService,
   ) {}
 
   @Post()
@@ -51,6 +56,10 @@ export class WebhooksController {
         const bookingId = parseInt(session.metadata.bookingId);
         await this.bookingService.updateStatus(bookingId, null, { status: 'confirmed' });
         console.log(`Payment successful for booking ${bookingId}`);
+        // Fire-and-forget confirmation email
+        this.sendConfirmationEmail(bookingId).catch(err =>
+          console.error('Email send error:', err),
+        );
         break;
 
       case 'checkout.session.expired':
@@ -64,5 +73,40 @@ export class WebhooksController {
     }
 
     res.json({ received: true });
+  }
+
+  private async sendConfirmationEmail(bookingId: number) {
+    const [booking] = await this.drizzle.db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.id, bookingId));
+    if (!booking) return;
+
+    const [user] = await this.drizzle.db
+      .select()
+      .from(users)
+      .where(eq(users.id, booking.userId));
+
+    const [trainer] = await this.drizzle.db
+      .select()
+      .from(trainers)
+      .where(eq(trainers.id, booking.trainerId));
+
+    const [trainerUser] = trainer
+      ? await this.drizzle.db.select().from(users).where(eq(users.id, trainer.userId))
+      : [null];
+
+    if (!user || !trainer || !trainerUser) return;
+
+    await this.mailService.sendBookingConfirmation({
+      to: user.email,
+      userName: user.fullName,
+      trainerName: trainerUser.fullName,
+      trainerSpecialty: trainer.specialty,
+      date: booking.date,
+      timeSlot: booking.timeSlot,
+      amount: trainer.pricePerSession,
+      bookingId: booking.id,
+    });
   }
 }

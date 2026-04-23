@@ -82,6 +82,21 @@ export const bookings = pgTable('bookings', {
   cancellationReason: text('cancellation_reason'),
 });
 
+export const pushSubscriptions = pgTable('push_subscriptions', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull().unique().references(() => users.id),
+  subscription: text('subscription').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const messages = pgTable('messages', {
+  id: serial('id').primaryKey(),
+  fromUserId: integer('from_user_id').notNull().references(() => users.id),
+  toUserId: integer('to_user_id').notNull().references(() => users.id),
+  content: text('content').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
 export const reviews = pgTable('reviews', {
   id: serial('id').primaryKey(),
   bookingId: integer('booking_id').notNull().unique().references(() => bookings.id),

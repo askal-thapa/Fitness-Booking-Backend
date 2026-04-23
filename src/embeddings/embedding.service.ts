@@ -84,6 +84,20 @@ export class EmbeddingService {
       .join(' ');
   }
 
+  // Flatten health conditions from either old array format or new structured {painAreas,conditions,notes} format
+  private flattenHealthConditions(raw: any): string[] {
+    if (Array.isArray(raw)) return raw;
+    if (raw && typeof raw === 'object') {
+      const { painAreas = [], conditions = [], notes = '' } = raw as {
+        painAreas?: string[]; conditions?: string[]; notes?: string;
+      };
+      return [...painAreas, ...conditions, ...(notes ? [notes] : [])];
+    }
+    try {
+      return this.flattenHealthConditions(JSON.parse(raw || '[]'));
+    } catch { return []; }
+  }
+
   // Build a descriptive corpus for a user's onboarding profile
   userText(u: {
     goal?: string | null;
@@ -91,12 +105,10 @@ export class EmbeddingService {
     workoutType?: string | null;
     activityLevel?: string | null;
     experienceLevel?: string | null;
-    healthConditions?: string[] | string | null;
+    healthConditions?: any;
     dietPreference?: string | null;
   }): string {
-    const conditions = Array.isArray(u.healthConditions)
-      ? u.healthConditions
-      : (() => { try { return JSON.parse(u.healthConditions as string || '[]'); } catch { return []; } })();
+    const conditions = this.flattenHealthConditions(u.healthConditions);
     return [
       u.goal && `Primary fitness goal: ${u.goal}.`,
       u.workoutType && `Preferred workout style: ${u.workoutType}.`,

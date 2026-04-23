@@ -16,6 +16,8 @@ import { AppController } from './app.controller';
 import { JwtStrategy } from './auth/jwt.strategy';
 import { StripeModule } from './stripe/stripe.module';
 import { EmbeddingService } from './embeddings/embedding.service';
+import { ChatModule } from './chat/chat.module';
+import { PushModule } from './push/push.module';
 
 @Global()
 @Module({
@@ -35,6 +37,8 @@ class DbModule {}
     }),
     DbModule,
     StripeModule,
+    ChatModule,
+    PushModule,
   ],
   controllers: [AppController, AuthController, OnboardingController, TrainerController, BookingController],
   providers: [AuthService, OnboardingService, TrainerService, CloudinaryService, BookingService, JwtStrategy],

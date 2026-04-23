@@ -120,6 +120,7 @@ export class TrainerService {
     await this.completePastBookings();
     const raw = await this.drizzle.db.select({
       id: trainers.id,
+      userId: trainers.userId,
       specialty: trainers.specialty,
       bio: trainers.bio,
       imageUrl: users.imageUrl,
@@ -318,6 +319,7 @@ export class TrainerService {
   async findOne(id: number) {
     const [trainer] = await this.drizzle.db.select({
       id: trainers.id,
+      userId: trainers.userId,
       specialty: trainers.specialty,
       bio: trainers.bio,
       imageUrl: users.imageUrl,
